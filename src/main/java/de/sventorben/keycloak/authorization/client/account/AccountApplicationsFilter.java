@@ -70,86 +70,92 @@ public class AccountApplicationsFilter {
             return;
         }
 
-        UserModel user = authResult.getUser();
-        RealmModel realm = session.getContext().getRealm();
-        AccessProvider accessProvider = getAccessProvider(session);
+        FilterContext ctx = new FilterContext(
+            session.getContext().getRealm(),
+            authResult.getUser(),
+            getAccessProvider(session),
+            config);
 
         LOG.debugf("Filtering account applications for user '%s' in realm '%s'",
-            user.getUsername(), realm.getName());
+            ctx.user.getUsername(), ctx.realm.getName());
 
+        filterResponseEntity(response, ctx);
+    }
+
+    private void filterResponseEntity(ContainerResponseContext response, FilterContext ctx) {
         Object entity = response.getEntity();
         if (entity instanceof Stream) {
             @SuppressWarnings("unchecked")
             Stream<ClientRepresentation> clientStream = (Stream<ClientRepresentation>) entity;
-            List<ClientRepresentation> filtered = filterClients(clientStream, realm, user, accessProvider, config);
-            response.setEntity(filtered);
+            response.setEntity(filterClients(clientStream, ctx));
         } else if (entity instanceof Collection) {
             @SuppressWarnings("unchecked")
             Collection<ClientRepresentation> clients = (Collection<ClientRepresentation>) entity;
             int originalCount = clients.size();
-            List<ClientRepresentation> filtered = filterClients(clients.stream(), realm, user, accessProvider, config);
-            int filteredCount = originalCount - filtered.size();
-            if (filteredCount > 0) {
-                LOG.infof("Filtered %d of %d applications for user '%s' in realm '%s'",
-                    filteredCount, originalCount, user.getUsername(), realm.getName());
-            } else {
-                LOG.debugf("No applications filtered for user '%s' in realm '%s' (showing all %d)",
-                    user.getUsername(), realm.getName(), originalCount);
-            }
+            List<ClientRepresentation> filtered = filterClients(clients.stream(), ctx);
+            logFilteringResult(ctx, originalCount, filtered.size());
             response.setEntity(filtered);
         }
     }
 
+    private void logFilteringResult(FilterContext ctx, int originalCount, int filteredCount) {
+        int removed = originalCount - filteredCount;
+        if (removed > 0) {
+            LOG.infof("Filtered %d of %d applications for user '%s' in realm '%s'",
+                removed, originalCount, ctx.user.getUsername(), ctx.realm.getName());
+        } else {
+            LOG.debugf("No applications filtered for user '%s' in realm '%s' (showing all %d)",
+                ctx.user.getUsername(), ctx.realm.getName(), originalCount);
+        }
+    }
+
     private List<ClientRepresentation> filterClients(Stream<ClientRepresentation> clients,
-                                                      RealmModel realm,
-                                                      UserModel user,
-                                                      AccessProvider accessProvider,
-                                                      AccountApplicationsFilterConfig config) {
+                                                      FilterContext ctx) {
         return clients
-            .filter(clientRep -> shouldShowApplication(clientRep, realm, user, accessProvider, config))
+            .filter(clientRep -> shouldShowApplication(clientRep, ctx))
             .collect(Collectors.toList());
     }
 
     private boolean shouldShowApplication(ClientRepresentation clientRep,
-                                          RealmModel realm,
-                                          UserModel user,
-                                          AccessProvider accessProvider,
-                                          AccountApplicationsFilterConfig config) {
-        ClientModel client = realm.getClientByClientId(clientRep.getClientId());
+                                          FilterContext ctx) {
+        ClientModel client = ctx.realm.getClientByClientId(clientRep.getClientId());
         if (client == null) {
             LOG.debugf("Client '%s' not found in realm, showing in console", clientRep.getClientId());
             return true;
         }
 
-        if (!accessProvider.isRestricted(client)) {
+        if (!ctx.accessProvider.isRestricted(client)) {
             LOG.tracef("Client '%s' is not restricted, showing in console for user '%s'",
-                clientRep.getClientId(), user.getUsername());
+                clientRep.getClientId(), ctx.user.getUsername());
             return true;
         }
 
         boolean isAlwaysDisplay = client.isAlwaysDisplayInConsole();
         boolean shouldFilter = isAlwaysDisplay
-            ? config.shouldFilterAlwaysDisplayApps()
-            : config.shouldFilterDynamicApps();
+            ? ctx.config.shouldFilterAlwaysDisplayApps()
+            : ctx.config.shouldFilterDynamicApps();
 
         if (!shouldFilter) {
             String clientType = isAlwaysDisplay ? "always-display" : "dynamic";
             LOG.tracef("Filtering disabled for %s clients, showing restricted client '%s' for user '%s'",
-                clientType, clientRep.getClientId(), user.getUsername());
+                clientType, clientRep.getClientId(), ctx.user.getUsername());
             return true;
         }
 
-        boolean hasPermission = accessProvider.isPermitted(client, user);
+        boolean hasPermission = ctx.accessProvider.isPermitted(client, ctx.user);
         if (hasPermission) {
             LOG.debugf("User '%s' has permission to access restricted client '%s' in realm '%s', showing in console",
-                user.getUsername(), clientRep.getClientId(), realm.getName());
+                ctx.user.getUsername(), clientRep.getClientId(), ctx.realm.getName());
         } else {
             String clientType = isAlwaysDisplay ? "always-display" : "dynamic";
             LOG.warnf("Hiding %s client '%s' from user '%s' in realm '%s' - user lacks required permission",
-                clientType, clientRep.getClientId(), user.getUsername(), realm.getName());
+                clientType, clientRep.getClientId(), ctx.user.getUsername(), ctx.realm.getName());
         }
         return hasPermission;
     }
+
+    private record FilterContext(RealmModel realm, UserModel user, AccessProvider accessProvider,
+                                  AccountApplicationsFilterConfig config) {}
 
     private AccountApplicationsFilterProvider getFilterProvider(KeycloakSession session) {
         AccountApplicationsFilterProvider provider = session.getProvider(AccountApplicationsFilterProvider.class);
