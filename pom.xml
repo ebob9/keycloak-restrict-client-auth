@@ -4,7 +4,7 @@
 
     <groupId>de.sventorben.keycloak</groupId>
     <artifactId>keycloak-restrict-client-auth</artifactId>
-    <version>26.1.1-SNAPSHOT</version>
+    <version>26.1.2-SNAPSHOT</version>
 
     <name>Keycloak: Authenticator - Restrict client authentication</name>
     <description>A Keycloak authenticator to restrict authentication on clients</description>
@@ -155,6 +155,18 @@
                 <scope>import</scope>
             </dependency>
 
+            <!-- CVE-2026-33870, CVE-2026-33871: override netty provided by keycloak-parent -->
+            <dependency>
+                <groupId>io.netty</groupId>
+                <artifactId>netty-codec-http</artifactId>
+                <version>4.1.133.Final</version>
+            </dependency>
+            <dependency>
+                <groupId>io.netty</groupId>
+                <artifactId>netty-codec-http2</artifactId>
+                <version>4.1.133.Final</version>
+            </dependency>
+
             <!-- Tests -->
             <dependency>
                 <groupId>org.junit</groupId>
@@ -196,7 +208,7 @@
         <dependency>
             <groupId>io.quarkus.resteasy.reactive</groupId>
             <artifactId>resteasy-reactive</artifactId>
-            <version>3.19.4</version>
+            <version>3.33.1</version>
             <scope>provided</scope>
         </dependency>
 

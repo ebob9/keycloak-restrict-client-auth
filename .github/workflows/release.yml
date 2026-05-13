@@ -16,6 +16,10 @@ jobs:
   release:
 
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      packages: write
 
     steps:
     - name: Checkout
@@ -57,6 +61,6 @@ jobs:
         title: "chore(release): Prepare next version after release ${{ github.event.inputs.releaseVersion }}"
         body: "Automated PR to prepare next version after release ${{ github.event.inputs.releaseVersion }}"
         labels: "release,ignore-for-release"
-        assignees: "sventorben"
+        assignees: "ebob9"
       env:
         GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"

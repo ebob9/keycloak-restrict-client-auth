@@ -70,9 +70,16 @@ public class AccountApplicationsFilter {
             return;
         }
 
+        RealmModel realm = session.getContext().getRealm();
+        UserModel user = session.users().getUserById(realm, authResult.token().getSubject());
+        if (user == null) {
+            LOG.debug("Could not resolve user from token subject, skipping filtering");
+            return;
+        }
+
         FilterContext ctx = new FilterContext(
-            session.getContext().getRealm(),
-            authResult.getUser(),
+            realm,
+            user,
             getAccessProvider(session),
             config);
 
