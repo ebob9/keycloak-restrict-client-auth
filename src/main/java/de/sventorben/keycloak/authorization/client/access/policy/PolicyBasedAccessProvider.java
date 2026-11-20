@@ -18,6 +18,7 @@ import org.keycloak.models.UserModel;
 import org.keycloak.representations.idm.authorization.AuthorizationRequest;
 
 import java.util.Collections;
+import java.util.Optional;
 
 import static java.util.Collections.emptyList;
 
@@ -41,7 +42,9 @@ public final class PolicyBasedAccessProvider implements AccessProvider {
     public boolean isPermitted(ClientModel client, UserModel user) {
         AuthorizationProvider authorization = keycloakSession.getProvider(AuthorizationProvider.class);
         Resource resource = getResource(client, authorization);
-        ResourceServer resourceServer = getResourceServer(client, authorization);
+        ResourceServer resourceServer = Optional.ofNullable(getResourceServer(client, authorization))
+            .map(EnforcingResourceServer::new)
+            .orElse(null);
 
         if (resource == null || resourceServer == null) {
             LOG.warnf("Possible configuration issue: Could not find resource '%s' for client '%s' in realm '%s'.",
@@ -82,12 +85,14 @@ public final class PolicyBasedAccessProvider implements AccessProvider {
     public void enableFor(ClientModel client) {
         if (isRestricted(client)) return;
 
-        client.setPublicClient(false);
-        client.setBearerOnly(false);
-
         AuthorizationProvider authorization = keycloakSession.getProvider(AuthorizationProvider.class);
         StoreFactory storeFactory = authorization.getStoreFactory();
         ResourceServer resourceServer = storeFactory.getResourceServerStore().findByClient(client);
+        if (resourceServer == null) {
+            LOG.warnf("Cannot restrict access to client '%s' in realm '%s', since authorization is not enabled for it.",
+                client.getClientId(), client.getRealm().getName());
+            return;
+        }
         storeFactory.getResourceStore().create(resourceServer, RESOURCE_NAME, resourceServer.getClientId());
     }
 
@@ -96,7 +101,7 @@ public final class PolicyBasedAccessProvider implements AccessProvider {
     }
 
     private void logAccessDenied(ClientModel client, UserModel user) {
-        LOG.warnf(
+        LOG.debugf(
             "Access for user '%s' is denied. User does not have permission to access resource '%s' on client '%s' in realm '%s'.",
             user.getUsername(), RESOURCE_NAME, client.getId(), client.getRealm().getName());
     }

@@ -1,10 +1,11 @@
 package de.sventorben.keycloak.authorization.client;
 
 import de.sventorben.keycloak.authorization.client.access.AccessProvider;
-import de.sventorben.keycloak.authorization.client.access.role.ClientRoleBasedAccessProviderFactory;
+import de.sventorben.keycloak.authorization.client.access.AccessProviderResolver;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 import org.jboss.logging.Logger;
+import org.keycloak.OAuthErrorException;
 import org.keycloak.authentication.AuthenticationFlowContext;
 import org.keycloak.authentication.AuthenticationFlowError;
 import org.keycloak.authentication.Authenticator;
@@ -14,7 +15,6 @@ import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.RealmModel;
 import org.keycloak.models.UserModel;
 import org.keycloak.representations.idm.OAuth2ErrorRepresentation;
-import org.keycloak.services.messages.Messages;
 import org.keycloak.sessions.AuthenticationSessionModel;
 import org.keycloak.utils.MediaTypeMatcher;
 
@@ -22,7 +22,12 @@ final class RestrictClientAuthAuthenticator implements Authenticator {
 
     private static final Logger LOG = Logger.getLogger(RestrictClientAuthAuthenticator.class);
 
-    RestrictClientAuthAuthenticator() {
+    private static final String TOKEN_ENDPOINT_PATH = "/protocol/openid-connect/token";
+
+    private final AccessProviderResolver accessProviderResolver;
+
+    RestrictClientAuthAuthenticator(AccessProviderResolver accessProviderResolver) {
+        this.accessProviderResolver = accessProviderResolver;
     }
 
     @Override
@@ -30,7 +35,8 @@ final class RestrictClientAuthAuthenticator implements Authenticator {
         final ClientModel client = context.getSession().getContext().getClient();
         final RestrictClientAuthConfig config = new RestrictClientAuthConfig(context.getAuthenticatorConfig());
 
-        final AccessProvider access = getAccessProvider(context, config);
+        final AccessProvider access = accessProviderResolver.resolve(
+            config.getAccessProviderId(), config.getAuthenticatorConfigAlias());
 
         if (!access.isRestricted(client)) {
             context.success();
@@ -50,43 +56,12 @@ final class RestrictClientAuthAuthenticator implements Authenticator {
         }
     }
 
-    private AccessProvider getAccessProvider(AuthenticationFlowContext context, RestrictClientAuthConfig config) {
-        final String accessProviderId = config.getAccessProviderId();
-
-        if (accessProviderId != null) {
-            AccessProvider accessProvider = context.getSession().getProvider(AccessProvider.class, accessProviderId);
-            if (accessProvider == null) {
-                LOG.warnf(
-                    "Configured access provider '%s' in authenticator config '%s' does not exist.",
-                    accessProviderId, config.getAuthenticatorConfigAlias());
-            } else {
-                LOG.tracef(
-                    "Using access provider '%s' in authenticator config '%s'.",
-                    accessProviderId, config.getAuthenticatorConfigAlias());
-                return accessProvider;
-            }
-        }
-
-        final AccessProvider defaultProvider = context.getSession().getProvider(AccessProvider.class);
-        if (defaultProvider != null) {
-            LOG.debugf(
-                "No access provider is configured in authenticator config '%s'. Using server-wide default provider '%s'",
-                config.getAuthenticatorConfigAlias(), defaultProvider);
-            return defaultProvider;
-        }
-
-        LOG.infof(
-            "Neither an access provider is configured in authenticator config '%s' nor has a server-wide default provider been set. Using '%s' as a fallback.",
-            config.getAuthenticatorConfigAlias(), ClientRoleBasedAccessProviderFactory.PROVIDER_ID);
-        return context.getSession().getProvider(AccessProvider.class, ClientRoleBasedAccessProviderFactory.PROVIDER_ID);
-    }
-
     private Response errorResponse(AuthenticationFlowContext context, RestrictClientAuthConfig config) {
         Response response;
         if (MediaTypeMatcher.isHtmlRequest(context.getHttpRequest().getHttpHeaders())) {
             response = htmlErrorResponse(context, config);
         } else {
-            response = oAuth2ErrorResponse();
+            response = oAuth2ErrorResponse(context);
         }
         return response;
     }
@@ -99,9 +74,20 @@ final class RestrictClientAuthAuthenticator implements Authenticator {
             .createErrorPage(Response.Status.FORBIDDEN);
     }
 
-    private static Response oAuth2ErrorResponse() {
-        return Response.status(Response.Status.UNAUTHORIZED.getStatusCode())
-            .entity(new OAuth2ErrorRepresentation(Messages.ACCESS_DENIED, "Access to client is denied."))
+    /**
+     * Errors according to RFC 6749: 'invalid_grant' from the token endpoint, i.e. for the resource owner password
+     * credentials grant, and 'access_denied' otherwise.
+     */
+    private static Response oAuth2ErrorResponse(AuthenticationFlowContext context) {
+        if (context.getUriInfo().getPath().endsWith(TOKEN_ENDPOINT_PATH)) {
+            return oAuth2ErrorResponse(Response.Status.BAD_REQUEST, OAuthErrorException.INVALID_GRANT);
+        }
+        return oAuth2ErrorResponse(Response.Status.FORBIDDEN, OAuthErrorException.ACCESS_DENIED);
+    }
+
+    private static Response oAuth2ErrorResponse(Response.Status status, String error) {
+        return Response.status(status.getStatusCode())
+            .entity(new OAuth2ErrorRepresentation(error, "Access to client is denied."))
             .type(MediaType.APPLICATION_JSON_TYPE)
             .build();
     }

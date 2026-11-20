@@ -1,7 +1,10 @@
 package de.sventorben.keycloak.authorization.client.clientpolicy.executor;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import de.sventorben.keycloak.authorization.client.access.AccessProvider;
+import de.sventorben.keycloak.authorization.client.access.AccessProviderResolver;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
@@ -13,8 +16,12 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.util.Map;
+
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mock.Strictness.LENIENT;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
@@ -23,6 +30,9 @@ class AutoConfigClientPolicyExecutorTest {
 
     @Mock
     KeycloakSession keycloakSession;
+
+    @Mock
+    AccessProviderResolver accessProviderResolver;
 
     @Mock
     AccessProvider accessProvider;
@@ -35,31 +45,49 @@ class AutoConfigClientPolicyExecutorTest {
 
     @BeforeEach
     void setUp() {
+        given(accessProviderResolver.resolve("client-role", "restrict-client-auth-auto-config"))
+            .willReturn(accessProvider);
         cut.setupConfiguration(null);
     }
 
     @ParameterizedTest
-    @EnumSource(value = ClientPolicyEvent.class, mode = EnumSource.Mode.INCLUDE, names = {"REGISTER", "REGISTERED", "UPDATE", "UPDATED"})
+    @EnumSource(value = ClientPolicyEvent.class, mode = EnumSource.Mode.INCLUDE, names = {"REGISTERED", "UPDATE", "UPDATED"})
     void enable(ClientPolicyEvent event) {
-        given(keycloakSession.getProvider(AccessProvider.class, "client-role")).willReturn(accessProvider);
-        cut.executeOnEvent(new ClientCRUDContext() {
-            @Override
-            public ClientPolicyEvent getEvent() {
-                return event;
-            }
-
-            @Override
-            public ClientModel getTargetClient() {
-                return targetClient;
-            }
-        });
+        cut.executeOnEvent(clientCrudContext(event, targetClient));
         verify(accessProvider).enableFor(targetClient);
     }
 
     @ParameterizedTest
-    @EnumSource(value = ClientPolicyEvent.class, mode = EnumSource.Mode.EXCLUDE, names = {"REGISTER", "REGISTERED", "UPDATE", "UPDATED"})
+    @EnumSource(value = ClientPolicyEvent.class, mode = EnumSource.Mode.EXCLUDE, names = {"REGISTERED", "UPDATE", "UPDATED"})
     void doNothing(ClientPolicyEvent event) {
-        cut.executeOnEvent(new ClientCRUDContext() {
+        cut.executeOnEvent(clientCrudContext(event, targetClient));
+        verify(accessProvider, never()).enableFor(targetClient);
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = ClientPolicyEvent.class, mode = EnumSource.Mode.INCLUDE, names = {"REGISTER", "UPDATE"})
+    void doesNothingWithoutTargetClient(ClientPolicyEvent event) {
+        cut.executeOnEvent(clientCrudContext(event, null));
+        verify(accessProvider, never()).enableFor(any());
+    }
+
+    @Test
+    void rejectsAutoAccessProvider() {
+        assertThat(configuration("auto").validateConfig()).isFalse();
+    }
+
+    @Test
+    void acceptsOtherAccessProviders() {
+        assertThat(configuration("client-role").validateConfig()).isTrue();
+    }
+
+    private static AutoConfigClientPolicyExecutorConfiguration configuration(String accessProviderId) {
+        return new ObjectMapper().convertValue(Map.of("accessProviderId", accessProviderId),
+            AutoConfigClientPolicyExecutorConfiguration.class);
+    }
+
+    private static ClientCRUDContext clientCrudContext(ClientPolicyEvent event, ClientModel targetClient) {
+        return new ClientCRUDContext() {
             @Override
             public ClientPolicyEvent getEvent() {
                 return event;
@@ -69,8 +97,6 @@ class AutoConfigClientPolicyExecutorTest {
             public ClientModel getTargetClient() {
                 return targetClient;
             }
-        });
-        verify(accessProvider, never()).enableFor(targetClient);
+        };
     }
-
 }

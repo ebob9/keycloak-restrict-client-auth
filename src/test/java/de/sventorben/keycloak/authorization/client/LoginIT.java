@@ -1,7 +1,7 @@
 package de.sventorben.keycloak.authorization.client;
 
 import dasniko.testcontainers.keycloak.KeycloakContainer;
-import jakarta.ws.rs.NotAuthorizedException;
+import jakarta.ws.rs.BadRequestException;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
@@ -10,13 +10,16 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.keycloak.admin.client.Keycloak;
 import org.keycloak.admin.client.resource.AuthenticationManagementResource;
+import org.keycloak.representations.AccessTokenResponse;
 import org.keycloak.representations.idm.AuthenticatorConfigRepresentation;
+import org.keycloak.representations.idm.authorization.DecisionStrategy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.testcontainers.containers.output.Slf4jLogConsumer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
+import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.Map;
 
@@ -57,8 +60,18 @@ class LoginIT {
             LoginIT.this.switchAccessProvider(accessProviderId);
             try (Keycloak keycloak = keycloakTest(USER_TEST_RESTRICTED, PASS_TEST_RESTRICTED, CLIENT_TEST_RESTRICTED)) {
                 assertThatThrownBy(() -> keycloak.tokenManager().grantToken())
-                    .isInstanceOf(NotAuthorizedException.class);
+                    .isInstanceOf(BadRequestException.class);
             }
+        }
+
+        @Test
+        void accessIsDeniedWithErrorAccordingToRfc6749() throws Exception {
+            LoginIT.this.switchAccessProvider("client-role");
+            HttpResponse<String> response = new TokenEndpoint(KEYCLOAK_AUTH_URL)
+                .passwordGrant(USER_TEST_RESTRICTED, PASS_TEST_RESTRICTED, CLIENT_TEST_RESTRICTED, null);
+
+            assertThat(response.statusCode()).as(response.body()).isEqualTo(400);
+            assertThat(response.body()).contains("\"invalid_grant\"", "Access to client is denied.");
         }
 
         @ParameterizedTest
@@ -67,6 +80,32 @@ class LoginIT {
             LoginIT.this.switchAccessProvider(accessProviderId);
             try (Keycloak keycloak = keycloakTest(USER_TEST_UNRESTRICTED, PASS_TEST_UNRESTRICTED, CLIENT_TEST_RESTRICTED)) {
                 assertThat(keycloak.tokenManager().grantToken()).isNotNull();
+            }
+        }
+    }
+
+    @Nested
+    class UnknownAccessProvider {
+
+        @BeforeEach
+        void switchAccessProvider() {
+            LoginIT.this.switchAccessProvider("does-not-exist");
+        }
+
+        @Test
+        void accessForUserWithRoleIsDenied() {
+            try (Keycloak keycloak = keycloakTest(USER_TEST_UNRESTRICTED, PASS_TEST_UNRESTRICTED, CLIENT_TEST_RESTRICTED)) {
+                assertThatThrownBy(() -> keycloak.tokenManager().grantToken())
+                    .isInstanceOf(BadRequestException.class);
+            }
+        }
+
+        @Test
+        void accessToUnrestrictedClientIsDenied() {
+            try (Keycloak keycloak = keycloakTest(USER_TEST_UNRESTRICTED, PASS_TEST_UNRESTRICTED,
+                CLIENT_TEST_UNRESTRICTED)) {
+                assertThatThrownBy(() -> keycloak.tokenManager().grantToken())
+                    .isInstanceOf(BadRequestException.class);
             }
         }
     }
@@ -84,7 +123,7 @@ class LoginIT {
             try (Keycloak keycloak = keycloakTest(USER_TEST_RESTRICTED, PASS_TEST_RESTRICTED,
                 CLIENT_TEST_RESTRICTED_BY_POLICY, CLIENT_SECRET_TEST_RESTRICTED_BY_POLICY)) {
                 assertThatThrownBy(() -> keycloak.tokenManager().grantToken())
-                    .isInstanceOf(NotAuthorizedException.class);
+                    .isInstanceOf(BadRequestException.class);
             }
         }
 
@@ -93,6 +132,30 @@ class LoginIT {
             try (Keycloak keycloak = keycloakTest(USER_TEST_UNRESTRICTED, PASS_TEST_UNRESTRICTED,
                 CLIENT_TEST_RESTRICTED_BY_POLICY, CLIENT_SECRET_TEST_RESTRICTED_BY_POLICY)) {
                 assertThat(keycloak.tokenManager().grantToken()).isNotNull();
+            }
+        }
+
+        @Test
+        void accessForUserWithRoleIsDeniedIfAnotherPolicyDeniesAndDecisionStrategyIsUnanimous() {
+            assertThatThrownBy(() -> grantTokenWithDenyingPolicy(DecisionStrategy.UNANIMOUS))
+                .isInstanceOf(BadRequestException.class);
+        }
+
+        @Test
+        void accessForUserWithRoleIsAllowedIfAnotherPolicyDeniesAndDecisionStrategyIsAffirmative() {
+            assertThat(grantTokenWithDenyingPolicy(DecisionStrategy.AFFIRMATIVE)).isNotNull();
+        }
+
+        private AccessTokenResponse grantTokenWithDenyingPolicy(DecisionStrategy decisionStrategy) {
+            try (Keycloak admin = keycloakAdmin()) {
+                ClientResourcePermission permission = new ClientResourcePermission(admin);
+                permission.addDenyingPolicy(decisionStrategy);
+                try (Keycloak keycloak = keycloakTest(USER_TEST_UNRESTRICTED, PASS_TEST_UNRESTRICTED,
+                    CLIENT_TEST_RESTRICTED_BY_POLICY, CLIENT_SECRET_TEST_RESTRICTED_BY_POLICY)) {
+                    return keycloak.tokenManager().grantToken();
+                } finally {
+                    permission.removeDenyingPolicy();
+                }
             }
         }
     }
